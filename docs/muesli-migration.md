@@ -11,44 +11,72 @@ behavior with this build.
 ## Work-laptop setup
 
 Build this branch with Xcode's Swift 6 toolchain. Runtime requires macOS 14+ on
-Apple Silicon; Parakeet Redux requires macOS 15+. Do the import before launching
-the app for the first time, so it does not start downloading its default model.
+Apple Silicon; Parakeet Redux requires macOS 15+.
 
 ```sh
-swift build -c release
-.build/release/parrot import-muesli
-.build/release/parrot import-muesli --write
-.build/release/parrot doctor
 scripts/dev-install.sh
 ```
 
-If Parrot already has a model selected, preview with `import-muesli --replace`,
-then apply with `import-muesli --replace --write`. The original settings are saved
-as a private `settings.json.backup-<UUID>` beside the settings file. Other settings,
-including unknown fields, survive import. Symlinked dotfiles keep their links.
-An invalid configuration is rejected instead of reset. Import never copies
-Muesli's provider credentials or transcripts.
+Quit Muesli to avoid competing hotkeys, then open the installed Parrot app. On its
+first launch, Parrot checks Muesli's local setup before any default model download
+and offers the selected dictation model in Settings. Review the model and exact
+folders, then choose **Use This Model**, **Keep My Selection**, or **Not Now**.
+Closing the window also remembers dismissal. Parrot records the offer and decision
+beside its settings in `muesli-import.json`; ordinary relaunches do not ask again.
+An existing cached Parrot model can continue loading while the offer is visible.
 
-The default source is `~/Library/Application Support/Muesli/config.json`. For a
-development install or another config location, pass `--config /path/config.json`.
-The selected `stt_backend` and `stt_model` must be supported and fully downloaded;
-unsupported or missing models stop the import with no fallback or download.
+Accepting saves Parrot's own configuration and applies the model once dictation is
+idle. If a model was already selected, the preview explains the replacement.
+Existing settings are backed up as a private `settings.json.backup-<UUID>`, and
+unrelated settings, unknown fields, and symlinked dotfiles are preserved. Import
+never copies provider credentials or transcripts. If a new model cannot load,
+the previous loaded model stays active.
 
-Quit Muesli before starting Parrot to avoid competing hotkeys. Open the installed
-Parrot app and grant its Microphone and Accessibility permissions. If reusing
-Whisper assets under Documents, allow Parrot's Documents-folder access when macOS
-asks; a terminal's access does not transfer to the app. Materialize iCloud-evicted
-files in Finder first. Keep the shared model files if uninstalling Muesli.
+Settings shows the **In use** model and backend separately from a pending
+**Selected** model, Parrot's own settings path, model/tokenizer paths, and whether
+the assets are Parrot-managed or in an external shared cache. Imported preferences
+belong to Parrot; it does not follow subsequent Muesli setting changes. Shared
+FluidAudio and Hugging Face folders are not owned by Muesli. Removing Muesli.app
+alone does not remove them; deleting those caches, including with a cleanup tool,
+will break a saved selection. Use the Reveal buttons to locate them.
+
+Use **Review Muesli Setup…** to explicitly retry after any saved decision, absence,
+or error. The default source is `~/Library/Application Support/Muesli/config.json`;
+when absent, Parrot also checks `MuesliDev/config.json`. **Choose Muesli Config…**
+opens a file picker for other locations and remembers the chosen source for retries.
+Unsupported or incomplete models report an error without fallback or download.
+Settings offers **Choose Another Cached Model…** and **Retry Selected Model** for
+recovery. Downloading a missing Parrot-managed Whisper model requires the explicit
+**Download** button. No native app startup or imported model silently downloads.
+
+Grant Microphone and Accessibility permissions for dictation. If reusing Whisper
+assets under Documents, allow Parrot's Documents-folder access when macOS asks;
+a terminal's access does not transfer to the app. Materialize iCloud-evicted files
+in Finder first.
 
 `scripts/dev-install.sh` builds and signs a local app. With no Developer ID it uses
 ad-hoc signing, so permission grants may need renewal after rebuilds. Development
 versions do not enable upstream automatic updates. These PR changes are not
 included in the upstream DMG or curl installer linked in the general README.
 
-For meeting notes, follow the companion Quill branch's matching commands:
-`quill import-muesli` followed by `quill import-muesli --write` (with `--replace`
-when replacing existing settings). Quill imports the separate meeting model and
-local Ollama configuration. Parrot never sends dictation to Ollama.
+The companion [Quill PR](https://github.com/bkono/quill/pull/2) provides its own
+first-launch offer for the separate meeting model and local Ollama configuration.
+Parrot never sends dictation to Ollama.
+
+### Optional CLI diagnostics and import
+
+The command-line flow remains available for scripts and troubleshooting:
+
+```sh
+.build/release/parrot import-muesli
+.build/release/parrot import-muesli --write
+.build/release/parrot doctor
+```
+
+If Parrot already has a model selected, preview with `import-muesli --replace`,
+then apply with `import-muesli --replace --write`. Use `--config /path/config.json`
+for another source. CLI acceptance also records the decision so the app will not
+prompt again. `doctor` checks assets without loading or downloading them.
 
 ## Compatible assets
 
@@ -107,15 +135,18 @@ swift build -c release
 
 Tests use temporary synthetic caches and cover configuration preservation,
 backups, symlinks, incomplete assets, tokenizer protocol IDs, no fallback on
-missing imported files, and retirement of superseded transcribers. Existing
+missing imported files, remembered import decisions and retries, native offer and
+provenance rendering, explicit download consent, idle switching, and retirement
+of superseded transcribers. Existing
 capture, gesture, delivery, and controller regressions remain in the full suite.
 Real model inference, microphone permissions, and hotkey behavior must still be
 checked on the work laptop; no large models are downloaded for these tests.
 
 ## Handoff
 
-- **Decision:** reuse exact selected assets in place; keep meeting summaries in
-  Quill. There is no new capture pipeline or completion policy.
+- **Decision:** offer import in the native app before any default downloads,
+  remember all decisions, and allow explicit retries. Reuse selected assets in
+  place; keep meeting summaries in Quill. There is no new capture pipeline or completion policy.
 - **Closed doors:** do not restore automatic movement of the shared Documents
   cache, automatic replacement of unsupported models, or tokenizer HTTP fallback
   for imported models.

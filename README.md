@@ -10,8 +10,8 @@
 Hold `fn`, speak, release. Your words appear at the cursor. On-device dictation for macOS.
 
 Already using Muesli? This fork can reuse its downloaded Parakeet or WhisperKit
-models in place. See [Switching from Muesli](docs/muesli-migration.md) before the
-first launch to avoid downloading Parrot's default model. Meeting summaries live
+models in place. Open the app to review its automatic import offer; no terminal
+command is required. See [Switching from Muesli](docs/muesli-migration.md). Meeting summaries live
 in the companion [Quill fork](https://github.com/bkono/quill).
 
 ## 1. Install
