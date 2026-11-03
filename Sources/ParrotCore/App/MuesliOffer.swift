@@ -91,10 +91,10 @@ final class MuesliOffer: ObservableObject {
                 receipt.updatedAt = Date()
                 try receipt.save(settingsFile: store.file)
             }
-            if let path = receipt.sourcePath { self.sourceURL = URL(fileURLWithPath: path) }
             self.receipt = receipt
             self.status = receipt.status
             self.error = receipt.error
+            if let path = receipt.sourcePath { self.sourceURL = URL(fileURLWithPath: path) }
         } catch {
             let problem = "Parrot could not read its saved import decision. Retry explicitly to review the Muesli setup."
             self.receipt = MuesliOfferReceipt(status: .failed, error: problem)
