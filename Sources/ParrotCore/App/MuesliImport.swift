@@ -20,6 +20,7 @@ public enum MuesliImport {
         print(String(decoding: preview, as: UTF8.self))
         if write {
             let backup = try self.write(result, to: target, expectedOriginal: original)
+            try MuesliOfferReceipt.recordAcceptance(settingsFile: target)
             print("Updated \(target.path)")
             if let backup { print("Backup: \(backup.path)") }
             print("Restart Parrot, then run parrot doctor. Meeting summaries are configured separately with quill import-muesli.")
@@ -51,6 +52,7 @@ public enum MuesliImport {
         }
         model.removeValue(forKey: "tokenizerFolder")
         for (key, value) in selection.configuration { model[key] = value }
+        model["importedFrom"] = "muesli"
         var result = existing
         result["model"] = model
         return result
@@ -92,14 +94,14 @@ public enum MuesliImport {
         return backup
     }
 
-    private static func object(_ data: Data, path: URL) throws -> [String: Any] {
+    static func object(_ data: Data, path: URL) throws -> [String: Any] {
         guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw MuesliImportError("Expected a JSON object at \(path.path).")
         }
         return json
     }
 
-    private static func originalData(at path: URL, maximumBytes: Int = 1 << 16) throws -> Data? {
+    static func originalData(at path: URL, maximumBytes: Int = 1 << 16) throws -> Data? {
         var linkInfo = stat()
         guard lstat(path.path, &linkInfo) == 0 else {
             if errno == ENOENT { return nil }
@@ -117,7 +119,7 @@ public enum MuesliImport {
         return try Data(contentsOf: target)
     }
 
-    private static func privateFile(_ data: Data, at url: URL) throws {
+    static func privateFile(_ data: Data, at url: URL) throws {
         let descriptor = open(url.path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0o600)
         guard descriptor >= 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
         let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
