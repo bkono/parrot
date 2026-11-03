@@ -19,17 +19,32 @@ public enum DoctorReport {
     /// `hotkey` is the key in use, nil for the one saved in settings.json.
     /// The fn mapping matters only when that key is fn (#42).
     public static func run(hotkey: HotkeyKey? = nil) -> [Check] {
+        run(hotkey: hotkey, modelSettings: nil)
+    }
+
+    static func run(hotkey: HotkeyKey?, modelSettings: ModelSettings?) -> [Check] {
         // Doctor runs from the command line, on the main thread.
         let key = hotkey ?? MainActor.assumeIsolated { SettingsStore().current.hotkey.key }
         var checks = [checkMicrophone(), checkAccessibility()]
         if key == .fn { checks.append(checkFnKeyMapping()) }
-        checks.append(checkModelCache())
+        checks.append(checkModelCache(settings: modelSettings))
         return checks
     }
 
     /// Models belong in Application Support. ~/Documents is unreadable from
     /// the launchd daemon and iCloud can evict the weights, which hangs load.
-    static func checkModelCache() -> Check {
+    static func checkModelCache(settings: ModelSettings? = nil) -> Check {
+        let settings = settings ?? MainActor.assumeIsolated { SettingsStore().current.model }
+        if let id = settings.id, let model = ModelRegistry.find(id),
+           model.engine == .parakeet || settings.modelFolder != nil {
+            do {
+                let selection = try MuesliModels.resolve(id: id, modelFolder: settings.modelFolder, tokenizerFolder: settings.tokenizerFolder)
+                try MuesliModels.validate(selection)
+                return Check(name: "local model \(id) (\(selection.modelFolder.path))", status: .ok, remediation: nil)
+            } catch {
+                return Check(name: "local model \(id)", status: .fail(error.localizedDescription), remediation: "restore the selected cached model in Muesli, then run `parrot import-muesli` to preview; no automatic download or fallback occurs")
+            }
+        }
         let name = "model cache (\(Paths.appSupport.path))"
         let resolved = Paths.appSupport.resolvingSymlinksInPath().path
         let documents = Paths.documents.path
@@ -44,7 +59,7 @@ public enum DoctorReport {
             return Check(
                 name: name,
                 status: .warn("models still in \(Paths.legacyModels.path)"),
-                remediation: "run `parrot setup` to move them"
+                remediation: "run `parrot import-muesli` to preview model reuse without moving shared assets"
             )
         }
         return Check(name: name, status: .ok, remediation: nil)

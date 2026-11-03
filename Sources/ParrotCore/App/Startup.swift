@@ -60,14 +60,14 @@ enum Startup {
     /// Runs the startup checks and returns the model to load.
     /// Throws `StartupFailure`. `hotkey` is a `--hotkey` override, nil for
     /// the saved key; it decides whether the fn mapping is checked.
-    static func check(modelID: String?, hotkey: HotkeyKey? = nil, skipDoctor: Bool) throws -> TranscriptionModel {
+    static func check(modelID: String?, hotkey: HotkeyKey? = nil, skipDoctor: Bool, modelSettings: ModelSettings? = nil) throws -> TranscriptionModel {
         // Agents installed before 0.0.6 log to /tmp until the plist is rewritten.
         if Paths.legacyTmpFiles.contains(where: { FileManager.default.fileExists(atPath: $0) }) {
             Log.info("note: old parrot logs found in /tmp; run `parrot install --launch-at-login` again to remove them and log privately.")
         }
 
         if !skipDoctor {
-            let checks = DoctorReport.run(hotkey: hotkey)
+            let checks = DoctorReport.run(hotkey: hotkey, modelSettings: modelSettings)
             if !DoctorReport.allOK(checks) {
                 Log.error("startup checks failed:")
                 DoctorReport.print(checks)
@@ -84,15 +84,15 @@ enum Startup {
         // (MicrophoneAccess), and again on the first press if still undecided.
         switch AVCaptureDevice.authorizationStatus(for: .audio) {
         case .denied, .restricted:
-            throw StartupFailure.microphoneDenied
+            if !AppLaunch.isApp { throw StartupFailure.microphoneDenied }
         default:
             break
         }
 
         // Don't look in ~/Documents for an old cache: under launchd that read
         // is denied or prompts. Name the command that can migrate instead.
-        if !WhisperKitTranscriber.isCached(model) {
-            Log.info("\(model.id) not in \(Paths.appSupport.path), downloading. to reuse a copy from ~/Documents/huggingface, run `parrot setup` instead.")
+        if model.engine == .whisperKit && !WhisperKitTranscriber.isCached(model) {
+            Log.info("\(model.id): imported model folders load locally; otherwise Parrot uses its own cache. Run `parrot import-muesli` to preview reuse.")
         }
 
         return model

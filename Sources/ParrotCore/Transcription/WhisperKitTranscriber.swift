@@ -2,18 +2,27 @@ import CoreML
 import Foundation
 import WhisperKit
 
-package actor WhisperKitTranscriber: Transcriber {
+package actor WhisperKitTranscriber: ManagedTranscriber {
     let modelID: String
     private let model: TranscriptionModel
     let tuning: WhisperTuning
     private var pipeline: WhisperKit?
     /// Set by `unload`: this transcriber was replaced and loads nothing more.
     private var retired = false
+    private let localSettings: ModelSettings?
 
     package init(model: TranscriptionModel, tuning: WhisperTuning = .standard) {
         self.modelID = model.id
         self.model = model
         self.tuning = tuning
+        self.localSettings = nil
+    }
+
+    init(model: TranscriptionModel, settings: ModelSettings) {
+        self.modelID = model.id
+        self.model = model
+        self.tuning = .standard
+        self.localSettings = settings
     }
 
     /// Loads the model into memory; downloads first if not already on disk.
@@ -24,6 +33,41 @@ package actor WhisperKitTranscriber: Transcriber {
         if pipeline != nil || retired { return }
         guard let whisperKitID = model.whisperKitID else {
             throw TranscriberError.missingEngineID
+        }
+        if let settings = localSettings {
+            let selection = try settings.modelFolder == nil ? Self.parrotSelection(model) : MuesliModels.resolve(
+                id: model.id, modelFolder: settings.modelFolder,
+                tokenizerFolder: settings.tokenizerFolder
+            )
+            try MuesliModels.validate(selection)
+            guard let tokenizerFolder = selection.tokenizerFolder else {
+                throw LocalModelError.missingTokenizer
+            }
+            let local = try await AutoTokenizerWrapper.from(modelFolder: tokenizerFolder)
+            let tokenizer = try LocalWhisperTokenizer(local)
+            let loaded = try await WhisperKit(WhisperKitConfig(
+                modelFolder: selection.modelFolder.path,
+                computeOptions: ModelComputeOptions(
+                    melCompute: tuning.melCompute,
+                    audioEncoderCompute: tuning.encoderCompute,
+                    textDecoderCompute: tuning.decoderCompute
+                ),
+                verbose: false, prewarm: false, load: false, download: false
+            ))
+            // download:false alone does not prevent tokenizer network fallback.
+            // Supplying a locally parsed tokenizer bypasses that fallback.
+            loaded.tokenizer = tokenizer
+            do {
+                try await loaded.loadModels()
+                try Task.checkCancellation()
+                loaded.textDecoder.isModelMultilingual = loaded.textDecoder.logitsSize != 51864
+                if retired { await loaded.unloadModels(); return }
+                pipeline = loaded
+            } catch {
+                await loaded.unloadModels()
+                throw error
+            }
+            return
         }
         Log.info("loading \(model.id)...")
         // Explicit downloadBase: the HubApi default is ~/Documents/huggingface,
@@ -213,6 +257,16 @@ package actor WhisperKitTranscriber: Transcriber {
 // MARK: - On-disk cache
 
 extension WhisperKitTranscriber {
+    /// The app-managed cache can also be loaded without invoking download or
+    /// tokenizer repair. Used automatically only after its files validate.
+    static func parrotSelection(_ model: TranscriptionModel) throws -> MuesliModels.Selection {
+        guard let variant = model.whisperKitID else { throw TranscriberError.missingEngineID }
+        return MuesliModels.Selection(
+            id: model.id,
+            modelFolder: Paths.appSupport.appendingPathComponent(folders(for: variant)[0]),
+            tokenizerFolder: Paths.appSupport.appendingPathComponent("models/openai/\(tokenizerName(for: variant))")
+        )
+    }
     /// True if `model`'s weights are already under `Paths.appSupport`.
     package static func isCached(_ model: TranscriptionModel) -> Bool {
         guard let variant = model.whisperKitID else { return false }
@@ -226,67 +280,6 @@ extension WhisperKitTranscriber {
         ModelRegistry.shared.contains { m in
             guard let variant = m.whisperKitID else { return false }
             return FileManager.default.fileExists(atPath: Paths.legacyModels.appendingPathComponent(folders(for: variant)[0]).path)
-        }
-    }
-
-    /// Move models that parrot ≤0.0.5 downloaded into ~/Documents/huggingface
-    /// to `Paths.appSupport`, so they aren't downloaded again. Only moves the
-    /// registry's own folders; other apps share that directory. Reads
-    /// ~/Documents, so call it from foreground commands only, never the daemon.
-    static func migrateLegacyModels() {
-        let fm = FileManager.default
-        let old = Paths.legacyModels
-        guard fm.fileExists(atPath: old.path) else { return }
-        let new: URL
-        do {
-            new = try Paths.prepareDirectory(Paths.appSupport)
-        } catch {
-            Log.warning("model migration skipped: \(error)")
-            return
-        }
-
-        for model in ModelRegistry.shared {
-            guard let variant = model.whisperKitID else { continue }
-            let folders = folders(for: variant)
-            guard fm.fileExists(atPath: old.appendingPathComponent(folders[0]).path) else { continue }
-            if fm.fileExists(atPath: new.appendingPathComponent(folders[0]).path) {
-                print("  \(model.id): already in \(new.path); the old copy in \(old.path) can be deleted")
-                continue
-            }
-            // Moving an iCloud-evicted file would block on materializing it.
-            // Leave it and let WhisperKit download a fresh copy instead.
-            let sources = folders.map { old.appendingPathComponent($0) }
-            if sources.contains(where: containsDataless) {
-                print("  \(model.id): evicted by iCloud, will download again instead of moving")
-                continue
-            }
-            do {
-                for folder in folders {
-                    let src = old.appendingPathComponent(folder)
-                    let dst = new.appendingPathComponent(folder)
-                    guard fm.fileExists(atPath: src.path), !fm.fileExists(atPath: dst.path) else { continue }
-                    try fm.createDirectory(at: dst.deletingLastPathComponent(), withIntermediateDirectories: true)
-                    try fm.moveItem(at: src, to: dst)
-                }
-                print("✓ moved \(model.id) to \(new.path)")
-            } catch {
-                Log.warning("couldn't move \(model.id): \(error)")
-            }
-        }
-
-        // Prune the now-empty folders parrot created, deepest first. Anything
-        // with other contents stays.
-        for sub in [
-            "models/argmaxinc/whisperkit-coreml/.cache/huggingface/download",
-            "models/argmaxinc/whisperkit-coreml/.cache/huggingface",
-            "models/argmaxinc/whisperkit-coreml/.cache",
-            "models/argmaxinc/whisperkit-coreml",
-            "models/argmaxinc",
-            "models/openai",
-            "models",
-            "",
-        ] {
-            removeIfEmpty(old.appendingPathComponent(sub))
         }
     }
 
@@ -309,28 +302,7 @@ extension WhisperKitTranscriber {
         return name.hasPrefix("whisper-large-v3") ? "whisper-large-v3" : name
     }
 
-    /// True if `url` or anything under it is an iCloud dataless placeholder.
-    /// Checks flags with lstat, which never triggers a download.
-    private static func containsDataless(_ url: URL) -> Bool {
-        func isDataless(_ path: String) -> Bool {
-            var st = stat()
-            return lstat(path, &st) == 0 && st.st_flags & UInt32(SF_DATALESS) != 0
-        }
-        if isDataless(url.path) { return true }
-        guard let walker = FileManager.default.enumerator(atPath: url.path) else { return false }
-        while let rel = walker.nextObject() as? String {
-            if isDataless(url.appendingPathComponent(rel).path) { return true }
-        }
-        return false
-    }
 
-    private static func removeIfEmpty(_ dir: URL) {
-        let fm = FileManager.default
-        guard let items = try? fm.contentsOfDirectory(atPath: dir.path),
-              items.allSatisfy({ $0 == ".DS_Store" })
-        else { return }
-        try? fm.removeItem(at: dir)
-    }
 }
 
 enum TranscriberError: Error {

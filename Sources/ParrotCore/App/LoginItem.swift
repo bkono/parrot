@@ -17,10 +17,6 @@ public enum LoginItem {
             throw SilentExit(1)
         }
 
-        // Move old models now, while we have the terminal's ~/Documents
-        // access. The app can't read ~/Documents.
-        WhisperKitTranscriber.migrateLegacyModels()
-
         if LegacyLaunchAgent.remove() {
             print("✓ removed the old LaunchAgent (\(Paths.legacyLaunchAgentLabel))")
         }

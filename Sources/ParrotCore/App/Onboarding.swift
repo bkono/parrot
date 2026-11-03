@@ -91,7 +91,8 @@ enum Onboarding {
         let mac = preferred.filter(SpokenLanguage.whisperLanguages.contains)
         next.language.spoken = Set(languages) == Set(mac) ? nil : languages
         let current = settings.model.id.flatMap(ModelRegistry.find) ?? ModelRegistry.recommended()
-        if languages.contains(where: { $0 != "en" }), current?.isMultilingual != true {
+        if settings.model.modelFolder == nil, current?.engine != .parakeet,
+           languages.contains(where: { $0 != "en" }), current?.isMultilingual != true {
             next.model.id = multilingualModel
         }
         next.onboarding.completed = true

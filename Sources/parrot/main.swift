@@ -9,7 +9,7 @@ struct Parrot: ParsableCommand {
         commandName: "parrot",
         abstract: "Minimal macOS dictation daemon. Hold a key (fn by default), speak, release.",
         version: AppBundle.version,
-        subcommands: [Run.self, Setup.self, Doctor.self, Models.self, Install.self],
+        subcommands: [Run.self, Setup.self, Doctor.self, Models.self, ImportMuesli.self, Install.self],
         defaultSubcommand: Run.self
     )
 }
@@ -132,6 +132,26 @@ struct Models: ParsableCommand {
         func run() throws {
             try exiting { try ModelCommands.download(id) }
         }
+    }
+}
+
+struct ImportMuesli: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "import-muesli",
+        abstract: "Preview reuse of Muesli's installed dictation model; --write saves it."
+    )
+
+    @Option(name: .long, help: "Muesli config.json path (defaults to Application Support/Muesli/config.json).")
+    var config: String?
+
+    @Flag(name: .long, help: "Write the validated selection to Parrot settings, with a backup.")
+    var write = false
+
+    @Flag(name: .long, help: "Replace an existing Parrot model selection when writing.")
+    var replace = false
+
+    func run() throws {
+        try MuesliImport.run(config: config, write: write, replace: replace)
     }
 }
 

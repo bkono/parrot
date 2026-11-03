@@ -44,11 +44,18 @@ public enum Daemon {
     public static func run(_ options: DaemonOptions) throws {
         // ArgumentParser calls run() on the main thread.
         let settings = MainActor.assumeIsolated { SettingsStore() }
-        let savedModel = MainActor.assumeIsolated { settings.current.model.id }
+        var modelSettings = MainActor.assumeIsolated { settings.current.model }
+        if let id = options.model { modelSettings = modelSettings.selecting(id) }
+        let requestedID = options.model ?? (modelSettings.modelFolder != nil ? modelSettings.id : Self.knownModel(modelSettings.id))
+        // Native recovery must keep Settings available for an unsupported saved
+        // selection. The placeholder is never loaded; the switcher reports the
+        // actual saved selection until the user chooses a compatible model.
+        let startupID = AppLaunch.isApp && requestedID.flatMap(ModelRegistry.find) == nil ? nil : requestedID
         let chosenModel = try Startup.check(
-            modelID: options.model ?? Self.knownModel(savedModel),
+            modelID: startupID,
             hotkey: options.hotkey,
-            skipDoctor: options.skipDoctor
+            skipDoctor: options.skipDoctor,
+            modelSettings: modelSettings
         )
 
         // Startup has already exited on denied access. If the system has never
@@ -59,10 +66,11 @@ public enum Daemon {
             MicrophoneAccess.requestIfUndetermined()
         }
 
-        let transcriber = WhisperKitTranscriber(model: chosenModel)
+        modelSettings.id = chosenModel.id
+        let transcriber = TranscriberFactory.make(model: chosenModel, settings: modelSettings, allowDownload: false)
 
         try MainActor.assumeIsolated {
-            try runLoop(model: chosenModel, transcriber: transcriber, settings: settings, options: options)
+            try runLoop(model: chosenModel, transcriber: transcriber, modelSettings: modelSettings, settings: settings, options: options)
         }
     }
 
@@ -83,7 +91,8 @@ public enum Daemon {
     @MainActor
     private static func runLoop(
         model: TranscriptionModel,
-        transcriber: WhisperKitTranscriber,
+        transcriber: any ManagedTranscriber,
+        modelSettings: ModelSettings,
         settings: SettingsStore,
         options: DaemonOptions
     ) throws {
@@ -99,14 +108,12 @@ public enum Daemon {
         // Before the menu, which shows "Check for Updates…" only when running.
         if AppLaunch.isApp { Updater.start() }
         let menuBar = MenuBarController(modelID: model.id)
-        let settingsWindow = SettingsWindow(store: settings)
+        let offer = MuesliOffer(store: settings)
+        let settingsWindow = SettingsWindow(store: settings, offer: offer)
         menuBar.onOpenSettings = { settingsWindow.show() }
         menuBar.setHotkey(monitor.key)
-        // Parrot.app sets up the hotkey, languages and permissions, and
-        // explains each permission before macOS asks (#51).
-        OnboardingWindow.startIfNeeded(store: settings, menuBar: menuBar)
         // A model change loads behind the menu bar and swaps in between dictations (#43).
-        let switcher = ModelSwitcher(model: model, transcriber: transcriber, menuBar: menuBar)
+        let switcher = ModelSwitcher(model: model, transcriber: transcriber, menuBar: menuBar, settings: modelSettings)
 
         // The dictionary (#33): converted once from dictionary.json, created
         // on first run, reloaded when it changes.
@@ -170,7 +177,7 @@ public enum Daemon {
                 }
             }
             if old.model != new.model {
-                switcher.select(new.model.id)
+                switcher.select(new.model)
             }
             if old.language != new.language {
                 // Read per dictation by dictionaryContext.
@@ -183,33 +190,63 @@ public enum Daemon {
         monitor.onHealthChange = { health in
             MainActor.assumeIsolated { menuBar.setHotkeyHealth(health) }
         }
-        // Load the model behind the menu-bar icon, so a first launch that
-        // downloads it shows "loading model…" instead of nothing. The hotkey
-        // starts only once the model is ready, so a press never reaches an
-        // unloaded transcriber. A failed load (offline first run) retries
-        // with backoff rather than exiting: the login item does not relaunch.
-        menuBar.setHotkeyHealth(.modelLoading)
-        Task { @MainActor in
-            var retryDelay: UInt64 = 30
-            while true {
-                do {
-                    try await transcriber.warmUp()
-                    break
-                } catch {
-                    Log.error("\(StartupFailure.warmupFailed(error).message); retrying in \(retryDelay)s")
-                    menuBar.setHotkeyHealth(.modelFailed)
-                    try? await Task.sleep(nanoseconds: retryDelay * 1_000_000_000)
-                    retryDelay = min(retryDelay * 2, 600)
-                    menuBar.setHotkeyHealth(.modelLoading)
-                }
-            }
+        // One model-load lifecycle serves startup, imports, recovery and swaps.
+        // No default model downloads while discovery or an offer is outstanding.
+        var hotkeyStarted = false
+        switcher.onReady = {
+            guard !hotkeyStarted else { return }
+            hotkeyStarted = true
             do {
-                try startHotkey(monitor, menuBar: menuBar) { event in
-                    controller.handle(event)
-                }
+                try startHotkey(monitor, menuBar: menuBar) { event in controller.handle(event) }
             } catch {
+                hotkeyStarted = false
                 Log.error((error as? StartupFailure)?.message ?? "\(error)")
                 menuBar.setHotkeyHealth(.tapDisabled)
+            }
+        }
+        ModelLoadStatus.shared.requestLoad = { allowDownload in
+            switcher.select(settings.current.model, allowDownload: allowDownload, force: true)
+        }
+        var initialDiscovery = AppLaunch.isApp
+        var startupResolved = false
+        var onboardingShown = false
+        offer.onStateChange = {
+            if initialDiscovery, !offer.isInspecting, offer.status == .offered || offer.status == .failed {
+                settingsWindow.show()
+            }
+            guard !offer.shouldHoldInitialLoad else { return }
+            startupResolved = true
+            switcher.select(settings.current.model)
+            if !onboardingShown {
+                onboardingShown = true
+                OnboardingWindow.startIfNeeded(store: settings, menuBar: menuBar)
+            }
+        }
+        menuBar.setHotkeyHealth(.modelLoading)
+        Task { @MainActor in
+            if AppLaunch.isApp {
+                // An offer must not interrupt an existing usable setup. Its
+                // selected cache can warm offline while discovery runs.
+                if let id = settings.current.model.id, let configured = ModelRegistry.find(id),
+                   TranscriberFactory.isCached(configured, settings: settings.current.model) {
+                    switcher.select(settings.current.model)
+                }
+                await offer.inspectAutomatically()
+                initialDiscovery = false
+                // A prior decision suppresses discovery and therefore emits no callback.
+                if !offer.shouldHoldInitialLoad, !startupResolved {
+                    switcher.select(settings.current.model)
+                    if !onboardingShown {
+                        onboardingShown = true
+                        OnboardingWindow.startIfNeeded(store: settings, menuBar: menuBar)
+                    }
+                }
+                if ModelLoadStatus.shared.current?.phase == .needsDownload,
+                   offer.status == .notFound { settingsWindow.show() }
+            } else {
+                // A foreground CLI invocation is explicit; keep its existing
+                // model-download behavior. Native first launch requires a button.
+                switcher.select(modelSettings, allowDownload: true)
             }
         }
 
