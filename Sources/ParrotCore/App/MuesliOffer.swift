@@ -51,6 +51,7 @@ struct MuesliOfferReceipt: Codable, Equatable {
 @MainActor
 final class MuesliOffer: ObservableObject {
     typealias Status = MuesliOfferReceipt.Status
+    typealias InspectSource = @Sendable (URL, URL) async throws -> MuesliModels.Selection?
 
     @Published private(set) var selection: MuesliModels.Selection?
     @Published private(set) var status: Status
@@ -64,16 +65,20 @@ final class MuesliOffer: ObservableObject {
     let receiptURL: URL
     private let store: SettingsStore
     private let home: URL
+    private let inspectSource: InspectSource
     private var receipt: MuesliOfferReceipt
     private var previewModel: ModelSettings?
     private var generation = 0
+    private var isApplying = false
 
     var wasPrompted: Bool { receipt.prompted }
     var shouldHoldInitialLoad: Bool { isInspecting || status == .unseen || status == .offered }
 
-    init(store: SettingsStore, home: URL = FileManager.default.homeDirectoryForCurrentUser) {
+    init(store: SettingsStore, home: URL = FileManager.default.homeDirectoryForCurrentUser,
+         inspectSource: @escaping InspectSource = MuesliOffer.discover) {
         self.store = store
         self.home = home
+        self.inspectSource = inspectSource
         sourceURL = home.appendingPathComponent("Library/Application Support/Muesli/config.json")
         receiptURL = MuesliOfferReceipt.location(settingsFile: store.file)
         do {
@@ -115,13 +120,10 @@ final class MuesliOffer: ObservableObject {
         onStateChange?()
         let source = sourceURL
         let home = home
+        let inspectSource = inspectSource
         let result = await Task.detached { () -> Result<MuesliModels.Selection?, Error> in
-            Result {
-                guard try MuesliImport.originalData(at: source, maximumBytes: 4 << 20) != nil else { return nil }
-                let candidate = try MuesliModels.fromMuesli(MuesliImport.read(source), home: home)
-                try MuesliModels.validate(candidate)
-                return candidate
-            }
+            do { return .success(try await inspectSource(source, home)) }
+            catch { return .failure(error) }
         }.value
         guard generation == currentGeneration else { return }
         isInspecting = false
@@ -145,6 +147,8 @@ final class MuesliOffer: ObservableObject {
 
     func accept() async {
         guard status == .offered, let selection, let previewModel, !isInspecting else { return }
+        isApplying = true
+        defer { isApplying = false }
         isInspecting = true
         error = nil
         onStateChange?()
@@ -182,7 +186,20 @@ final class MuesliOffer: ObservableObject {
     }
 
     func reject() { finish(.rejected) }
-    func dismiss() { finish(.dismissed) }
+    func dismiss() {
+        // Closing a window while discovery is in flight dismisses that attempt.
+        // A previously accepted write, however, must complete after consent.
+        if isInspecting, !isApplying {
+            generation += 1
+            isInspecting = false
+            selection = nil
+            previewModel = nil
+            _ = transition(.dismissed)
+            onStateChange?()
+        } else {
+            finish(.dismissed)
+        }
+    }
 
     private func finish(_ status: Status) {
         guard self.status == .offered, !isInspecting else { return }
@@ -215,5 +232,12 @@ final class MuesliOffer: ObservableObject {
 
     nonisolated private static func sameSelection(_ lhs: MuesliModels.Selection, _ rhs: MuesliModels.Selection) -> Bool {
         lhs.id == rhs.id && lhs.modelFolder.path == rhs.modelFolder.path && lhs.tokenizerFolder?.path == rhs.tokenizerFolder?.path
+    }
+
+    nonisolated private static func discover(source: URL, home: URL) async throws -> MuesliModels.Selection? {
+        guard try MuesliImport.originalData(at: source, maximumBytes: 4 << 20) != nil else { return nil }
+        let candidate = try MuesliModels.fromMuesli(MuesliImport.read(source), home: home)
+        try MuesliModels.validate(candidate)
+        return candidate
     }
 }

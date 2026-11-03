@@ -4,6 +4,29 @@ import XCTest
 
 @MainActor
 final class MuesliOfferTests: XCTestCase {
+    private actor DiscoveryGate {
+        private var paused: CheckedContinuation<Void, Never>?
+        private var entered: CheckedContinuation<Void, Never>?
+
+        func suspend() async {
+            await withCheckedContinuation { continuation in
+                paused = continuation
+                entered?.resume()
+                entered = nil
+            }
+        }
+
+        func waitUntilSuspended() async {
+            if paused != nil { return }
+            await withCheckedContinuation { entered = $0 }
+        }
+
+        func release() {
+            paused?.resume()
+            paused = nil
+        }
+    }
+
     private struct Fixture {
         let home: URL
         let settings: URL
@@ -192,5 +215,51 @@ final class MuesliOfferTests: XCTestCase {
         XCTAssertEqual(offer.status, .accepted)
         XCTAssertFalse(offer.wasPrompted)
         XCTAssertNil(offer.selection)
+    }
+
+    func testClosingDuringDiscoveryDismissesWithoutPublishingLateOffer() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        try fixture.prepare()
+        let candidate = try MuesliModels.fromMuesli(fixture.sourceJSON, home: fixture.home)
+        let gate = DiscoveryGate()
+        let store = SettingsStore(file: fixture.settings)
+        let offer = MuesliOffer(store: store, home: fixture.home, inspectSource: { _, _ in
+            await gate.suspend()
+            return candidate
+        })
+        var observed = [MuesliOffer.Status]()
+        offer.onStateChange = { [weak offer] in if let offer { observed.append(offer.status) } }
+        let inspection = Task { await offer.retry() }
+        await gate.waitUntilSuspended()
+        XCTAssertTrue(offer.isInspecting)
+        offer.dismiss()
+        XCTAssertEqual(offer.status, .dismissed)
+        XCTAssertFalse(offer.shouldHoldInitialLoad)
+        await gate.release()
+        await inspection.value
+        XCTAssertEqual(offer.status, .dismissed)
+        XCTAssertNil(offer.selection)
+        XCTAssertFalse(observed.contains(.offered))
+        XCTAssertEqual(try MuesliOfferReceipt.load(settingsFile: fixture.settings).status, .dismissed)
+        let relaunched = MuesliOffer(store: store, home: fixture.home)
+        await relaunched.inspectAutomatically()
+        XCTAssertEqual(relaunched.status, .dismissed)
+    }
+
+    func testClosingDuringAcceptedWriteDoesNotCancelConsent() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        try fixture.prepare()
+        let store = SettingsStore(file: fixture.settings)
+        let offer = MuesliOffer(store: store, home: fixture.home)
+        await offer.inspectAutomatically()
+        offer.onStateChange = { [weak offer] in
+            if let offer, offer.status == .offered, offer.isInspecting { offer.dismiss() }
+        }
+        await offer.accept()
+        XCTAssertEqual(offer.status, .accepted)
+        XCTAssertEqual(store.current.model.id, "parakeet-v3")
+        XCTAssertEqual(try MuesliOfferReceipt.load(settingsFile: fixture.settings).status, .accepted)
     }
 }
