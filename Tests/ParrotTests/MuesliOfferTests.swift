@@ -262,4 +262,64 @@ final class MuesliOfferTests: XCTestCase {
         XCTAssertEqual(store.current.model.id, "parakeet-v3")
         XCTAssertEqual(try MuesliOfferReceipt.load(settingsFile: fixture.settings).status, .accepted)
     }
+    func testChosenSourceIsRememberedWithoutAutomaticRetry() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        try fixture.prepare()
+        let chosen = fixture.home.appendingPathComponent("chosen/config.json")
+        try FileManager.default.createDirectory(at: chosen.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.moveItem(at: fixture.source, to: chosen)
+        let store = SettingsStore(file: fixture.settings)
+        let offer = MuesliOffer(store: store, home: fixture.home)
+        await offer.inspectAutomatically()
+        XCTAssertEqual(offer.status, .notFound)
+        await offer.retry(sourceURL: chosen)
+        XCTAssertEqual(offer.status, .offered)
+        XCTAssertEqual(offer.sourceURL, chosen)
+        offer.reject()
+        let relaunched = MuesliOffer(store: store, home: fixture.home)
+        await relaunched.inspectAutomatically()
+        XCTAssertEqual(relaunched.status, .rejected)
+        XCTAssertNil(relaunched.selection)
+        XCTAssertEqual(relaunched.sourceURL, chosen)
+        await relaunched.retry()
+        XCTAssertEqual(relaunched.status, .offered)
+        await relaunched.accept()
+        XCTAssertEqual(relaunched.status, .accepted)
+        XCTAssertEqual(store.current.model.id, "parakeet-v3")
+        XCTAssertEqual(try MuesliOfferReceipt.load(settingsFile: fixture.settings).sourcePath, chosen.path)
+    }
+
+    func testAutomaticDiscoveryUsesDevelopmentOnlyWhenStandardIsAbsent() async throws {
+        for standard in ["absent", "valid", "invalid"] {
+            let fixture = try Fixture()
+            defer { fixture.remove() }
+            try fixture.prepare()
+            let development = fixture.home.appendingPathComponent("Library/Application Support/MuesliDev/config.json")
+            try fixture.write(fixture.sourceJSON, to: development)
+            if standard == "absent" { try FileManager.default.removeItem(at: fixture.source) }
+            if standard == "invalid" { try fixture.write(["stt_backend": "unsupported"], to: fixture.source) }
+            let offer = MuesliOffer(store: SettingsStore(file: fixture.settings), home: fixture.home)
+            await offer.inspectAutomatically()
+            XCTAssertEqual(offer.status, standard == "invalid" ? .failed : .offered)
+            XCTAssertEqual(offer.sourceURL, standard == "absent" ? development : fixture.source)
+        }
+    }
+
+    func testLegacyDecisionWithoutSourcePathRemainsRemembered() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        try fixture.prepare()
+        let receipt = MuesliOfferReceipt(status: .rejected, prompted: true)
+        let data = try JSONEncoder().encode(receipt)
+        var json = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        json.removeValue(forKey: "sourcePath")
+        try fixture.write(json, to: MuesliOfferReceipt.location(settingsFile: fixture.settings))
+        let offer = MuesliOffer(store: SettingsStore(file: fixture.settings), home: fixture.home)
+        await offer.inspectAutomatically()
+        XCTAssertEqual(offer.status, .rejected)
+        XCTAssertEqual(offer.sourceURL, fixture.source)
+        XCTAssertNil(offer.selection)
+    }
+
 }

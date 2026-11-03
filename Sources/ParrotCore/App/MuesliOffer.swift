@@ -12,6 +12,7 @@ struct MuesliOfferReceipt: Codable, Equatable {
     var prompted = false
     var updatedAt = Date()
     var error: String?
+    var sourcePath: String?
 
     static func location(settingsFile: URL) -> URL {
         settingsFile.deletingLastPathComponent().appendingPathComponent("muesli-import.json")
@@ -39,9 +40,10 @@ struct MuesliOfferReceipt: Codable, Equatable {
         }
     }
 
-    static func recordAcceptance(settingsFile: URL) throws {
+    static func recordAcceptance(settingsFile: URL, sourceURL: URL? = nil) throws {
         var receipt = (try? load(settingsFile: settingsFile)) ?? Self()
         receipt.status = .accepted
+        if let sourceURL { receipt.sourcePath = sourceURL.path }
         receipt.updatedAt = Date()
         receipt.error = nil
         try receipt.save(settingsFile: settingsFile)
@@ -61,7 +63,7 @@ final class MuesliOffer: ObservableObject {
     @Published private(set) var replacingModelID: String?
     var onStateChange: (() -> Void)?
 
-    let sourceURL: URL
+    @Published private(set) var sourceURL: URL
     let receiptURL: URL
     private let store: SettingsStore
     private let home: URL
@@ -89,6 +91,7 @@ final class MuesliOffer: ObservableObject {
                 receipt.updatedAt = Date()
                 try receipt.save(settingsFile: store.file)
             }
+            if let path = receipt.sourcePath { self.sourceURL = URL(fileURLWithPath: path) }
             self.receipt = receipt
             self.status = receipt.status
             self.error = receipt.error
@@ -102,15 +105,16 @@ final class MuesliOffer: ObservableObject {
 
     func inspectAutomatically() async {
         guard status == .unseen, !isInspecting else { return }
-        await inspect()
+        await inspect(allowDevelopmentFallback: true)
     }
 
-    func retry() async {
+    func retry(sourceURL: URL? = nil) async {
         guard !isInspecting else { return }
+        if let sourceURL { self.sourceURL = sourceURL.standardizedFileURL }
         await inspect()
     }
 
-    private func inspect() async {
+    private func inspect(allowDevelopmentFallback: Bool = false) async {
         generation += 1
         let currentGeneration = generation
         selection = nil
@@ -121,13 +125,23 @@ final class MuesliOffer: ObservableObject {
         let source = sourceURL
         let home = home
         let inspectSource = inspectSource
-        let result = await Task.detached { () -> Result<MuesliModels.Selection?, Error> in
-            do { return .success(try await inspectSource(source, home)) }
-            catch { return .failure(error) }
+        let result = await Task.detached { () -> (URL, Result<MuesliModels.Selection?, Error>) in
+            var candidateSource = source
+            do {
+                if allowDevelopmentFallback,
+                   try MuesliImport.originalData(at: source, maximumBytes: 4 << 20) == nil {
+                    let development = home.appendingPathComponent("Library/Application Support/MuesliDev/config.json")
+                    if try MuesliImport.originalData(at: development, maximumBytes: 4 << 20) != nil {
+                        candidateSource = development
+                    }
+                }
+                return (candidateSource, .success(try await inspectSource(candidateSource, home)))
+            } catch { return (candidateSource, .failure(error)) }
         }.value
         guard generation == currentGeneration else { return }
         isInspecting = false
-        switch result {
+        sourceURL = result.0
+        switch result.1 {
         case .success(let candidate?):
             previewModel = store.current.model
             replacingModelID = store.current.model.id
@@ -214,6 +228,7 @@ final class MuesliOffer: ObservableObject {
     private func transition(_ status: Status, prompted: Bool? = nil, error: String? = nil) -> Bool {
         var next = receipt
         next.status = status
+        next.sourcePath = sourceURL.path
         next.updatedAt = Date()
         next.prompted = prompted ?? receipt.prompted
         next.error = error

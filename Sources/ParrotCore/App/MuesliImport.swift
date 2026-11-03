@@ -20,7 +20,7 @@ public enum MuesliImport {
         print(String(decoding: preview, as: UTF8.self))
         if write {
             let backup = try self.write(result, to: target, expectedOriginal: original)
-            try MuesliOfferReceipt.recordAcceptance(settingsFile: target)
+            try MuesliOfferReceipt.recordAcceptance(settingsFile: target, sourceURL: source)
             print("Updated \(target.path)")
             if let backup { print("Backup: \(backup.path)") }
             print("Restart Parrot, then run parrot doctor. Meeting summaries are configured separately with quill import-muesli.")
