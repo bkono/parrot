@@ -1,113 +1,119 @@
 import Foundation
 
-/// Applies a model change while Parrot runs (#43): loads the new model behind
-/// the menu bar, downloading it first if needed, while the current one keeps
-/// serving presses, then swaps it into the `DictationController` between
-/// dictations.
-///
-/// A second change while a load runs supersedes it: the first load's result
-/// is dropped. A failed load logs, shows a short status, and keeps the current
-/// model; the setting stays as chosen, so the next change or the next launch
-/// tries again.
+/// Owns startup and subsequent model loads. A newer selection cancels the old
+/// attempt; only a successful load may change the active model, between dictations.
 @MainActor
 final class ModelSwitcher {
-    /// The model the controller transcribes with.
     private(set) var model: TranscriptionModel
     private var transcriber: any ManagedTranscriber
     private var settings: ModelSettings
-    /// Set by the daemon once the controller exists.
     weak var controller: DictationController?
+    var onReady: (() -> Void)?
+    private(set) var ready = false
 
-    private let menuBar: MenuBarController
+    private let menuBar: MenuBarController?
     private let status: ModelLoadStatus
+    private let make: (TranscriptionModel, ModelSettings, Bool) -> any ManagedTranscriber
+    private let cached: (TranscriptionModel, ModelSettings) -> Bool
+    private let idle: (() -> Bool)?
     private var load: Task<Void, Never>?
-    /// Bumped on every change, so a superseded load cannot swap or report.
     private var generation = 0
+    private var pendingSettings: ModelSettings?
 
-    init(model: TranscriptionModel, transcriber: any ManagedTranscriber, menuBar: MenuBarController, settings: ModelSettings = ModelSettings(), status: ModelLoadStatus? = nil) {
+    init(model: TranscriptionModel, transcriber: any ManagedTranscriber,
+         menuBar: MenuBarController? = nil, settings: ModelSettings = ModelSettings(),
+         status: ModelLoadStatus? = nil,
+         make: @escaping (TranscriptionModel, ModelSettings, Bool) -> any ManagedTranscriber = TranscriberFactory.make,
+         cached: @escaping (TranscriptionModel, ModelSettings) -> Bool = TranscriberFactory.isCached,
+         idle: (() -> Bool)? = nil) {
         self.model = model
         self.settings = settings
         self.transcriber = transcriber
         self.menuBar = menuBar
         self.status = status ?? .shared
+        self.make = make
+        self.cached = cached
+        self.idle = idle
     }
 
-    /// Loads and swaps in `id`, a `ModelRegistry` id or nil for the
-    /// recommended model.
-    func select(_ settings: ModelSettings) {
-        let id = settings.id
-        guard let next = Daemon.knownModel(id).flatMap(ModelRegistry.find) ?? ModelRegistry.recommended() else { return }
+    /// Existing assets may load automatically. Downloading requires a separate
+    /// explicit UI action; selecting a missing imported cache never downloads.
+    func select(_ settings: ModelSettings, allowDownload: Bool = false, force: Bool = false) {
+        var settings = settings
+        if settings.id == nil { settings.id = ModelRegistry.recommended()?.id }
+        if !force, pendingSettings == settings { return }
         generation += 1
         load?.cancel()
         load = nil
-        guard next.id != model.id || settings != self.settings else {
-            // Back to the model already in use: nothing to load.
-            status.show(nil)
-            menuBar.setModel(model.id)
+        pendingSettings = nil
+        guard let next = settings.id.flatMap(ModelRegistry.find) ?? (settings.id == nil ? ModelRegistry.recommended() : nil) else {
+            status.show(.init(modelID: settings.id ?? "", phase: .failed))
+            if !ready { menuBar?.setHotkeyHealth(.modelFailed) }
             return
         }
-
+        settings.id = next.id
+        if ready && next.id == model.id && settings == self.settings && !force {
+            status.show(nil)
+            menuBar?.setModel(model.id)
+            return
+        }
+        let isCached = cached(next, settings)
+        let external = next.engine == .parakeet || settings.modelFolder != nil
+        guard isCached || (allowDownload && !external) else {
+            report(external ? .failed : .needsDownload, next, generation)
+            return
+        }
         let generation = self.generation
-        let incoming = TranscriberFactory.make(model: next, settings: settings)
-        report((next.engine == .parakeet || settings.modelFolder != nil || TranscriberFactory.isCached(next)) ? .loading : .downloading(nil), next, generation)
-        Log.info("model: loading \(next.id) behind \(model.id)")
-
-        // The switcher lives as long as the daemon, so the task holds it
-        // strongly. It runs on the main actor except inside the awaits.
+        let incoming = make(next, settings, allowDownload && !isCached)
+        report(isCached ? .loading : .downloading(nil), next, generation)
+        pendingSettings = settings
         load = Task {
             do {
+                try Task.checkCancellation()
                 try await incoming.warmUp { fraction in
                     Task { @MainActor in
                         self.report(fraction < 1 ? .downloading(fraction) : .loading, next, generation)
                     }
                 }
                 report(.loading, next, generation)
-                // Swap between dictations: never under one that is recording
-                // or transcribing.
-                while (controller?.state ?? .idle) != .idle {
+                while !(idle?() ?? ((controller?.state ?? .idle) == .idle)) {
                     try await Task.sleep(nanoseconds: 100_000_000)
                 }
                 try Task.checkCancellation()
-                guard self.generation == generation else {
-                    await incoming.unload()
-                    return
-                }
-                swap(to: next, incoming, settings: settings)
+                guard self.generation == generation else { await incoming.unload(); return }
+                let outgoing = transcriber
+                controller?.replaceTranscriber(incoming)
+                transcriber = incoming
+                model = next
+                self.settings = settings
+                ready = true
+                self.generation += 1
+                load = nil
+                pendingSettings = nil
+                status.setActive(settings)
+                status.show(nil)
+                menuBar?.setModel(next.id)
+                Task { await outgoing.unload() }
+                onReady?()
             } catch {
                 await incoming.unload()
                 guard self.generation == generation, !Task.isCancelled else { return }
-                Log.error("couldn't load \(next.id): \(error); keeping \(model.id)")
+                load = nil
+                pendingSettings = nil
+                Log.error("couldn't load \(next.id): \(error)")
                 report(.failed, next, generation)
             }
         }
     }
 
-    private func swap(to next: TranscriptionModel, _ incoming: any ManagedTranscriber, settings: ModelSettings) {
-        let outgoing = transcriber
-        controller?.replaceTranscriber(incoming)
-        transcriber = incoming
-        model = next
-        self.settings = settings
-        generation += 1
-        load = nil
-        status.show(nil)
-        menuBar.setModel(next.id)
-        Log.info("model: \(next.id)")
-        // Free the old model's memory. Nothing is transcribing with it: the
-        // swap waited for the controller to go idle.
-        Task { await outgoing.unload() }
-    }
-
     private func report(_ phase: ModelLoadStatus.Phase, _ next: TranscriptionModel, _ generation: Int) {
-        // A progress callback can land after the swap it belonged to.
         guard generation == self.generation else { return }
-        // Downloading → loading only moves forward; a late progress callback
-        // must not put "downloading" back.
         if case .downloading = phase, status.current?.modelID == next.id, status.current?.phase == .loading { return }
-        let state = ModelLoadStatus.State(modelID: next.id, phase: phase)
-        guard state != status.current else { return }
-        status.show(state)
-        menuBar.setModel("\(model.id) · \(state.text)")
+        status.show(.init(modelID: next.id, phase: phase))
+        if !ready {
+            menuBar?.setHotkeyHealth(phase == .failed || phase == .needsDownload ? .modelFailed : .modelLoading)
+        }
+        menuBar?.setModel(ready ? "\(model.id) · \(status.current?.text ?? "")" : (status.current?.text ?? next.id))
     }
 }
 
@@ -122,6 +128,7 @@ final class ModelLoadStatus: ObservableObject {
         case downloading(Double?)
         case loading
         case failed
+        case needsDownload
     }
 
     struct State: Equatable {
@@ -139,12 +146,19 @@ final class ModelLoadStatus: ObservableObject {
                 return "loading \(modelID)…"
             case .failed:
                 return "couldn't load \(modelID)"
+            case .needsDownload:
+                return "choose or download \(modelID)"
             }
         }
     }
 
     /// Nil when no load is running or has just failed.
     @Published private(set) var current: State?
+    @Published private(set) var activeSettings: ModelSettings?
+    /// true permits an explicit download of a Parrot-managed Whisper model.
+    var requestLoad: ((Bool) -> Void)?
+
+    func setActive(_ settings: ModelSettings) { activeSettings = settings }
 
     func show(_ state: State?) {
         // Whole percents only: the menu and the window need no finer steps.

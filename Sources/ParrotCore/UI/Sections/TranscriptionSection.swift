@@ -14,7 +14,8 @@ struct TranscriptionSection: View {
         .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
 
     private var selectedModel: TranscriptionModel? {
-        store.current.model.id.flatMap(ModelRegistry.find) ?? ModelRegistry.recommended()
+        if let id = store.current.model.id { return ModelRegistry.find(id) }
+        return ModelRegistry.recommended()
     }
 
     var body: some View {
@@ -31,7 +32,7 @@ struct TranscriptionSection: View {
                     }
                 }
                 Spacer()
-                PillMenu(title: selectedModel.map(Self.menuTitle) ?? "None") {
+                PillMenu(title: selectedModel.map(Self.menuTitle) ?? store.current.model.id ?? "None") {
                     modelGroup("English", ModelRegistry.shared.filter { !$0.isMultilingual })
                     modelGroup("Multilingual", ModelRegistry.shared.filter(\.isMultilingual))
                 }
@@ -44,7 +45,7 @@ struct TranscriptionSection: View {
                         ProgressView(value: fraction).frame(width: 80)
                     case .downloading(nil), .loading:
                         ProgressView().controlSize(.small)
-                    case .failed:
+                    case .failed, .needsDownload:
                         EmptyView()
                     }
                     caption(Self.capitalized(state.text))

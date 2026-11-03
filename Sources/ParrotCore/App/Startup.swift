@@ -84,7 +84,7 @@ enum Startup {
         // (MicrophoneAccess), and again on the first press if still undecided.
         switch AVCaptureDevice.authorizationStatus(for: .audio) {
         case .denied, .restricted:
-            throw StartupFailure.microphoneDenied
+            if !AppLaunch.isApp { throw StartupFailure.microphoneDenied }
         default:
             break
         }

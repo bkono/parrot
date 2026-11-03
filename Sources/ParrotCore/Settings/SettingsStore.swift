@@ -119,6 +119,17 @@ final class SettingsStore: ObservableObject {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
         var data = try encoder.encode(settings)
+        // Preserve extensions/unknown keys while still removing known optional
+        // fields when the user clears them (for example a previous model path).
+        if Paths.fileType(file.path) != nil {
+            let previousData = try Data(contentsOf: file)
+            let previous = try JSONDecoder().decode(Settings.self, from: previousData)
+            let existing = try JSONSerialization.jsonObject(with: previousData) as? [String: Any] ?? [:]
+            let known = try JSONSerialization.jsonObject(with: encoder.encode(previous)) as? [String: Any] ?? [:]
+            let next = try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
+            data = try JSONSerialization.data(withJSONObject: Self.preservingUnknown(existing, known: known, next: next),
+                                              options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])
+        }
         data.append(0x0A)
 
         let dir = file.deletingLastPathComponent()
@@ -130,6 +141,18 @@ final class SettingsStore: ObservableObject {
         try data.write(to: target, options: .atomic)
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: target.path)
         lastProblem = nil
+    }
+
+    nonisolated static func preservingUnknown(_ existing: [String: Any], known: [String: Any], next: [String: Any]) -> [String: Any] {
+        var merged = existing
+        for key in known.keys where next[key] == nil { merged.removeValue(forKey: key) }
+        for (key, value) in next {
+            if let newObject = value as? [String: Any] {
+                merged[key] = preservingUnknown(existing[key] as? [String: Any] ?? [:],
+                                                known: known[key] as? [String: Any] ?? [:], next: newObject)
+            } else { merged[key] = value }
+        }
+        return merged
     }
 
     private static func describe(_ error: DecodingError) -> String {

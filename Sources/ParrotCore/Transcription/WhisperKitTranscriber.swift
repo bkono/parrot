@@ -35,7 +35,7 @@ package actor WhisperKitTranscriber: ManagedTranscriber {
             throw TranscriberError.missingEngineID
         }
         if let settings = localSettings {
-            let selection = try MuesliModels.resolve(
+            let selection = try settings.modelFolder == nil ? Self.parrotSelection(model) : MuesliModels.resolve(
                 id: model.id, modelFolder: settings.modelFolder,
                 tokenizerFolder: settings.tokenizerFolder
             )
@@ -257,6 +257,16 @@ package actor WhisperKitTranscriber: ManagedTranscriber {
 // MARK: - On-disk cache
 
 extension WhisperKitTranscriber {
+    /// The app-managed cache can also be loaded without invoking download or
+    /// tokenizer repair. Used automatically only after its files validate.
+    static func parrotSelection(_ model: TranscriptionModel) throws -> MuesliModels.Selection {
+        guard let variant = model.whisperKitID else { throw TranscriberError.missingEngineID }
+        return MuesliModels.Selection(
+            id: model.id,
+            modelFolder: Paths.appSupport.appendingPathComponent(folders(for: variant)[0]),
+            tokenizerFolder: Paths.appSupport.appendingPathComponent("models/openai/\(tokenizerName(for: variant))")
+        )
+    }
     /// True if `model`'s weights are already under `Paths.appSupport`.
     package static func isCached(_ model: TranscriptionModel) -> Bool {
         guard let variant = model.whisperKitID else { return false }

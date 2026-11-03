@@ -24,7 +24,7 @@ enum HotkeyHealth: Equatable {
         case .tapDisabled: return "hotkey tap disabled"
         case .accessibilityMissing: return "grant Accessibility to start"
         case .modelLoading: return "loading model…"
-        case .modelFailed: return "couldn't load the model, retrying"
+        case .modelFailed: return "model unavailable; open Settings…"
         }
     }
 

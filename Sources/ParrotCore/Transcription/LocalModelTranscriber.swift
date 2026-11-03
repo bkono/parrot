@@ -16,9 +16,9 @@ enum LocalModelError: Error, LocalizedError {
 }
 
 enum TranscriberFactory {
-    static func make(model: TranscriptionModel, settings: ModelSettings) -> any ManagedTranscriber {
+    static func make(model: TranscriptionModel, settings: ModelSettings, allowDownload: Bool = true) -> any ManagedTranscriber {
         if model.engine == .parakeet { return ParakeetTranscriber(model: model, settings: settings) }
-        if settings.modelFolder != nil { return WhisperKitTranscriber(model: model, settings: settings) }
+        if settings.modelFolder != nil || !allowDownload { return WhisperKitTranscriber(model: model, settings: settings) }
         return WhisperKitTranscriber(model: model)
     }
 
@@ -27,7 +27,8 @@ enum TranscriberFactory {
             guard let selection = try? MuesliModels.resolve(id: model.id, modelFolder: settings.modelFolder, tokenizerFolder: settings.tokenizerFolder) else { return false }
             return (try? MuesliModels.validate(selection)) != nil
         }
-        return WhisperKitTranscriber.isCached(model)
+        guard let selection = try? WhisperKitTranscriber.parrotSelection(model) else { return false }
+        return (try? MuesliModels.validate(selection)) != nil
     }
 }
 

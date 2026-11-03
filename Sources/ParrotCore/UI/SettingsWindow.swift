@@ -5,12 +5,14 @@ import SwiftUI
 /// One instance: opening it again brings the same window to the front, and
 /// closing it leaves Parrot running.
 @MainActor
-final class SettingsWindow {
+final class SettingsWindow: NSObject, NSWindowDelegate {
     private let store: SettingsStore
     private var window: NSWindow?
+    private let offer: MuesliOffer
 
-    init(store: SettingsStore) {
+    init(store: SettingsStore, offer: MuesliOffer) {
         self.store = store
+        self.offer = offer
     }
 
     func show() {
@@ -33,11 +35,14 @@ final class SettingsWindow {
         // The header inside says it; the title still names the window in
         // Mission Control and the window switcher.
         window.titleVisibility = .hidden
-        window.contentView = NSHostingView(rootView: SettingsView(store: store))
+        window.contentView = NSHostingView(rootView: SettingsView(store: store, offer: offer))
+        window.delegate = self
         window.isReleasedWhenClosed = false
         window.center()
         return window
     }
+
+    func windowWillClose(_ notification: Notification) { offer.dismiss() }
 }
 
 
@@ -51,12 +56,15 @@ final class SettingsWindow {
 /// carry the style, as in the onboarding window.
 struct SettingsView: View {
     @ObservedObject var store: SettingsStore
+    @ObservedObject var offer: MuesliOffer
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
                 SettingsHeader()
                     .padding(.bottom, 8)
+                Divider()
+                MuesliImportSection(offer: offer)
                 Divider()
                 SettingsGroup("General") {
                     PillRow("Config") {
@@ -75,6 +83,7 @@ struct SettingsView: View {
                 }
                 Divider()
                 TranscriptionSection(store: store)
+                ModelSourceSection(store: store, runtime: .shared)
             }
             .padding(.horizontal, 32)
             .padding(.top, 36)
