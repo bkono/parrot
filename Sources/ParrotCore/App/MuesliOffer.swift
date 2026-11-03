@@ -77,7 +77,7 @@ final class MuesliOffer: ObservableObject {
     var shouldHoldInitialLoad: Bool { isInspecting || status == .unseen || status == .offered }
 
     init(store: SettingsStore, home: URL = FileManager.default.homeDirectoryForCurrentUser,
-         inspectSource: @escaping InspectSource = MuesliOffer.discover) {
+         inspectSource: @escaping InspectSource = { source, home in try await MuesliOffer.discover(source: source, home: home) }) {
         self.store = store
         self.home = home
         self.inspectSource = inspectSource
