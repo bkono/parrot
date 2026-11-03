@@ -94,7 +94,7 @@ final class MuesliImportTests: XCTestCase {
         let tokenizer = home.appendingPathComponent("Documents/huggingface/models/openai/whisper-large-v3")
         for file in ["tokenizer.json", "tokenizer_config.json"] { try write(to: tokenizer.appendingPathComponent(file)) }
         let complete = try MuesliModels.fromMuesli(source, home: home)
-        XCTAssertEqual(complete.tokenizerFolder, tokenizer)
+        XCTAssertEqual(complete.tokenizerFolder?.path, tokenizer.path)
         XCTAssertNoThrow(try MuesliModels.validate(complete))
     }
 
