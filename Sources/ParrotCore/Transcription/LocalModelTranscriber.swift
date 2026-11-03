@@ -47,6 +47,9 @@ actor ParakeetTranscriber: ManagedTranscriber {
 
     func warmUp(progress: (@Sendable (Double) -> Void)? = nil) async throws {
         guard tdt == nil, unified == nil, !retired else { return }
+        if modelID == "parakeet-redux", #unavailable(macOS 15) {
+            throw MuesliImportError("Parakeet Redux requires macOS 15 or later. Select another installed model.")
+        }
         let selection = try MuesliModels.resolve(id: modelID, modelFolder: settings.modelFolder, tokenizerFolder: nil)
         try MuesliModels.validate(selection)
         try Task.checkCancellation()

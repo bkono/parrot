@@ -41,7 +41,8 @@ enum MuesliModels {
         variant == "large-v3-v20240930_626MB" ? "whisper-large-v3-turbo-626mb" : "whisper-\(variant)"
     }
 
-    static func cachedCandidates(home: URL = FileManager.default.homeDirectoryForCurrentUser) -> [Selection] {
+    static func cachedCandidates(home: URL = FileManager.default.homeDirectoryForCurrentUser,
+                                 includeTokenizers: Bool = true) -> [Selection] {
         let fluid = home.appendingPathComponent("Library/Application Support/FluidAudio/Models")
         var result = ["v2", "v3", "redux"].map { version in
             Selection(id: "parakeet-\(version)", modelFolder: fluid.appendingPathComponent(
@@ -53,14 +54,16 @@ enum MuesliModels {
         result += whisperVariants.map { variant in
             let folder = whisper.appendingPathComponent("openai_whisper-\(variant)")
             return Selection(id: id(forWhisper: variant), modelFolder: folder,
-                             tokenizerFolder: findTokenizer(variant: variant, modelFolder: folder, home: home))
+                             tokenizerFolder: includeTokenizers ? findTokenizer(variant: variant, modelFolder: folder, home: home) : nil)
         }
         return result
     }
 
     static func resolve(id: String, modelFolder: String?, tokenizerFolder: String?,
                         home: URL = FileManager.default.homeDirectoryForCurrentUser) throws -> Selection {
-        guard let known = cachedCandidates(home: home).first(where: { $0.id == id }) else {
+        // Resolving a FluidAudio model must not probe Documents for unrelated
+        // Whisper tokenizers or request access to that protected directory.
+        guard let known = cachedCandidates(home: home, includeTokenizers: false).first(where: { $0.id == id }) else {
             throw MuesliImportError("Unsupported shared model: \(id). Run parrot models list for compatible models.")
         }
         func path(_ value: String) throws -> URL {
