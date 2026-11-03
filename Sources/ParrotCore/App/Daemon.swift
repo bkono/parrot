@@ -44,11 +44,13 @@ public enum Daemon {
     public static func run(_ options: DaemonOptions) throws {
         // ArgumentParser calls run() on the main thread.
         let settings = MainActor.assumeIsolated { SettingsStore() }
-        let savedModel = MainActor.assumeIsolated { settings.current.model.id }
+        var modelSettings = MainActor.assumeIsolated { settings.current.model }
+        if let id = options.model { modelSettings = modelSettings.selecting(id) }
         let chosenModel = try Startup.check(
-            modelID: options.model ?? Self.knownModel(savedModel),
+            modelID: options.model ?? (modelSettings.modelFolder != nil ? modelSettings.id : Self.knownModel(modelSettings.id)),
             hotkey: options.hotkey,
-            skipDoctor: options.skipDoctor
+            skipDoctor: options.skipDoctor,
+            modelSettings: modelSettings
         )
 
         // Startup has already exited on denied access. If the system has never
@@ -59,10 +61,11 @@ public enum Daemon {
             MicrophoneAccess.requestIfUndetermined()
         }
 
-        let transcriber = WhisperKitTranscriber(model: chosenModel)
+        modelSettings.id = chosenModel.id
+        let transcriber = TranscriberFactory.make(model: chosenModel, settings: modelSettings)
 
         try MainActor.assumeIsolated {
-            try runLoop(model: chosenModel, transcriber: transcriber, settings: settings, options: options)
+            try runLoop(model: chosenModel, transcriber: transcriber, modelSettings: modelSettings, settings: settings, options: options)
         }
     }
 
@@ -83,7 +86,8 @@ public enum Daemon {
     @MainActor
     private static func runLoop(
         model: TranscriptionModel,
-        transcriber: WhisperKitTranscriber,
+        transcriber: any ManagedTranscriber,
+        modelSettings: ModelSettings,
         settings: SettingsStore,
         options: DaemonOptions
     ) throws {
@@ -106,7 +110,7 @@ public enum Daemon {
         // explains each permission before macOS asks (#51).
         OnboardingWindow.startIfNeeded(store: settings, menuBar: menuBar)
         // A model change loads behind the menu bar and swaps in between dictations (#43).
-        let switcher = ModelSwitcher(model: model, transcriber: transcriber, menuBar: menuBar)
+        let switcher = ModelSwitcher(model: model, transcriber: transcriber, menuBar: menuBar, settings: modelSettings)
 
         // The dictionary (#33): converted once from dictionary.json, created
         // on first run, reloaded when it changes.
@@ -170,7 +174,7 @@ public enum Daemon {
                 }
             }
             if old.model != new.model {
-                switcher.select(new.model.id)
+                switcher.select(new.model)
             }
             if old.language != new.language {
                 // Read per dictation by dictionaryContext.

@@ -12,6 +12,16 @@ protocol Transcriber: Sendable {
     func transcribe(_ audio: [Float], context: TranscriptionContext) async throws -> Transcript
 }
 
+/// Model lifecycle used at startup and by the existing idle-only switcher.
+protocol ManagedTranscriber: Transcriber {
+    func warmUp(progress: (@Sendable (Double) -> Void)?) async throws
+    func unload() async
+}
+
+extension ManagedTranscriber {
+    func warmUp() async throws { try await warmUp(progress: nil) }
+}
+
 /// What the transcriber is told about the dictation beyond the audio.
 /// Features fill these fields; engines use what they support.
 package struct TranscriptionContext: Equatable, Sendable {

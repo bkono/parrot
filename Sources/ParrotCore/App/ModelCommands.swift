@@ -13,7 +13,11 @@ public enum ModelCommands {
             let langs = "[\(m.languages.joined(separator: ","))]"
                 .padding(toLength: 9, withPad: " ", startingAt: 0)
             let size = String(format: "%5d MB", m.sizeMB)
-            print("\(star) \(id) \(size)  \(langs)  \(m.displayName)")
+            let source = m.engine == .parakeet ? " [reuse only]" : ""
+            print("\(star) \(id) \(size)  \(langs)  \(m.displayName)\(source)")
+        }
+        for cached in MuesliModels.cachedCandidates() where (try? MuesliModels.validate(cached)) != nil {
+            print("cached: \(cached.id) — \(cached.modelFolder.path)")
         }
     }
 
@@ -22,7 +26,9 @@ public enum ModelCommands {
             print("unknown model: \(id)")
             throw SilentExit(1)
         }
-        WhisperKitTranscriber.migrateLegacyModels()
+        guard m.engine == .whisperKit else {
+            throw LocalModelError.unsupported("\(id) is reuse-only; download it in Muesli, then run parrot import-muesli")
+        }
         let t = WhisperKitTranscriber(model: m)
 
         let sem = DispatchSemaphore(value: 0)

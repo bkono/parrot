@@ -7,11 +7,23 @@ struct ModelSettings: Codable, Equatable {
     /// A `ModelRegistry` id, or nil for the recommended model. An id the
     /// registry doesn't know falls back to the recommended model at startup.
     var id: String?
+    /// Explicit reusable assets. When set, model loading is strictly offline.
+    var modelFolder: String?
+    var tokenizerFolder: String?
 
     init() {}
+
+    /// A different model must not inherit the previous model's explicit paths.
+    func selecting(_ id: String) -> ModelSettings {
+        var result = self.id == id ? self : ModelSettings()
+        result.id = id
+        return result
+    }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decodeIfPresent(String.self, forKey: .id)
+        modelFolder = try c.decodeIfPresent(String.self, forKey: .modelFolder)
+        tokenizerFolder = try c.decodeIfPresent(String.self, forKey: .tokenizerFolder)
     }
 }

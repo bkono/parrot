@@ -68,11 +68,11 @@ struct TranscriptionSection: View {
             ForEach(models.sorted { $0.sizeMB < $1.sizeMB }, id: \.id) { model in
                 Toggle(isOn: Binding(
                     get: { selectedModel?.id == model.id },
-                    set: { on in if on { store.update { $0.model.id = model.id } } }
+                    set: { on in if on { store.update { $0.model = $0.model.selecting(model.id) } } }
                 )) {
                     // A model not on the Mac yet downloads when chosen; the
                     // arrow says so without words.
-                    if WhisperKitTranscriber.isCached(model) {
+                    if model.engine == .parakeet || TranscriberFactory.isCached(model) {
                         Text(Self.shortName(model))
                     } else {
                         Label(Self.shortName(model), systemImage: "arrow.down.circle")
@@ -106,7 +106,7 @@ struct TranscriptionSection: View {
     /// "Fastest · English only · 145 MB". Not shown while the model loads:
     /// the progress line under the menu says that instead.
     private func summary(_ model: TranscriptionModel) -> String {
-        let languages = model.isMultilingual ? "99 languages" : "English only"
+        let languages = model.isMultilingual ? "\(model.supportedLanguages.count) languages" : "English only"
         let size = model.sizeMB >= 1000
             ? String(format: "%.1f GB", Double(model.sizeMB) / 1000)
             : "\(model.sizeMB) MB"
@@ -124,12 +124,13 @@ struct TranscriptionSection: View {
     @ViewBuilder private var languagePicker: some View {
         let multilingual = selectedModel?.isMultilingual ?? false
         let code = store.current.language.code?.lowercased()
-        let selected = code.flatMap { SpokenLanguage.whisperLanguages.contains($0) ? $0 : nil }
+        let supported = selectedModel?.supportedLanguages ?? SpokenLanguage.whisperLanguages
+        let selected = code.flatMap { supported.contains($0) ? $0 : nil }
         PillRow("Language") {
             PillMenu(title: selected.map { SpokenLanguage.displayName($0) } ?? "Automatic") {
                 languageToggle("Automatic", nil, selected: selected)
                 Divider()
-                ForEach(Self.languages, id: \.code) { language in
+                ForEach(Self.languages.filter { supported.contains($0.code) }, id: \.code) { language in
                     languageToggle(language.name, language.code, selected: selected)
                 }
             }
@@ -139,6 +140,8 @@ struct TranscriptionSection: View {
         if !multilingual, let model = selectedModel {
             let only = SpokenLanguage.displayName(model.languages.first ?? "en")
             caption("\(model.displayName) hears \(only) only; choose a multilingual model to set a language.")
+        } else if selectedModel?.engine == .parakeet {
+            caption("Parakeet recognizes its supported languages automatically. Language is a script hint; the Whisper spoken-language filter and example prompts do not apply. Dictionary replacements still apply.")
         } else if store.current.language.code == nil {
             PillRow("Languages") {
                 SpokenLanguagesButton(store: store)

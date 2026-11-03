@@ -10,6 +10,7 @@ let package = Package(
         // argmax-oss-swift#514: before it, any transcription with promptTokens
         // came back empty, which the dictionary's example sentence relies on.
         .package(url: "https://github.com/argmaxinc/argmax-oss-swift.git", from: "1.1.0"),
+        .package(url: "https://github.com/FluidInference/FluidAudio.git", exact: "0.17.3"),
         // In-app updates (#50). A binary framework: scripts/build-app.sh
         // embeds it in Parrot.app/Contents/Frameworks and signs it.
         .package(url: "https://github.com/sparkle-project/Sparkle.git", from: "2.6.0"),
@@ -20,6 +21,7 @@ let package = Package(
             name: "ParrotCore",
             dependencies: [
                 .product(name: "WhisperKit", package: "argmax-oss-swift"),
+                .product(name: "FluidAudio", package: "FluidAudio"),
                 .product(name: "Sparkle", package: "Sparkle"),
             ]
         ),

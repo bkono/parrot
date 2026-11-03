@@ -14,7 +14,7 @@ import Foundation
 @MainActor
 final class SettingsStore: ObservableObject {
     /// Larger than any hand-written settings file; refuses anything absurd.
-    static let maxBytes = 1 << 16
+    nonisolated static let maxBytes = 1 << 16
 
     let file: URL
     @Published private(set) var current: Settings

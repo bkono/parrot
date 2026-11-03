@@ -18,9 +18,6 @@ public enum SetupFlow {
         print("asks for its own on first start: allow Parrot when macOS prompts.")
         print()
 
-        // Runs here, with the terminal's ~/Documents access; the daemon has none.
-        WhisperKitTranscriber.migrateLegacyModels()
-
         try waitForAccessibility()
         print()
         try waitForMicrophone()
